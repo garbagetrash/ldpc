@@ -1,77 +1,71 @@
-const H: [[u8; 10]; 5] = [
-    [1, 1, 1, 0, 0, 1, 1, 0, 0, 1],
-    [1, 0, 1, 0, 1, 1, 0, 1, 1, 0],
-    [0, 0, 1, 1, 1, 0, 1, 0, 1, 1],
-    [0, 1, 0, 1, 1, 1, 0, 1, 0, 1],
-    [1, 1, 0, 1, 0, 0, 1, 1, 1, 0],
-];
-
-
-fn check_node_to_variables(llrs: &[f64]) -> f64 {
-    2.0 * (llrs.iter().map(|l| (l/2.0).tanh()).product::<f64>()).atanh()
+/// Sparse parity check matrix
+pub struct SparseParity {
+    nrows: usize,
+    ncols: usize,
+    max_column_weight: usize,
+    /// Each row is a row of the parity check, so M total. Each element in the
+    /// row is a usize indicating a column in which a 1 resides.
+    rows: Vec<Vec<usize>>,
 }
 
-fn variable_to_check_nodes(llrs: &[f64], ln: f64) -> f64 {
-    ln + llrs.iter().sum::<f64>()
+fn parity_check(codeword: &[u8], parity: &SparseParity) -> Vec<u8> {
+    parity.rows.iter().map(|row| {
+        row.iter().copied().fold(0_u8, |acc, e| acc ^ codeword[e])
+    }).collect()
 }
 
-fn iteration(llrs: &mut [[f64; 10]; 3], channel_llrs: &[f64]) {
-    let mut lmn_struct: [[f64; 10]; 3] = [
-        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    ];
-    let mut lmn_cnts: [usize; 10] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    let mut llr_cnts: [usize; 10] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+pub fn iteration(llrs: &mut Vec<Vec<f32>>, channel_llrs: &[f32], parity: &SparseParity) {
+    let mut lmn_struct = vec![];
+    for _ in 0..parity.max_column_weight {
+        lmn_struct.push(vec![0.0_f32; parity.ncols]);
+    }
+    let mut lmn_cnts = vec![0; parity.ncols];
+    let mut llr_cnts = vec![0; parity.ncols];
 
     // parity check probs (tanh rule)
-    for m in 0..5 {
-        let mut _llrs = vec![];
-        for i in 0..10 {
-            if H[m][i] == 1 {
-                _llrs.push(llrs[llr_cnts[i]][i]);
-                llr_cnts[i] += 1;
-            }
+    for row in &parity.rows {
+        let mut _llrs = Vec::with_capacity(row.len());
+        for &c in row {
+            _llrs.push(llrs[llr_cnts[c]][c]);
+            llr_cnts[c] += 1;
         }
-        let all = _llrs.iter().map(|l| (l/2.0).tanh()).product::<f64>();
-        for n in 0..10 {
-            if H[m][n] == 1 {
-                let lmn = all / (llrs[llr_cnts[n] - 1][n]/2.0).tanh();
-                lmn_struct[lmn_cnts[n]][n] = 2.0 * lmn.atanh();
-                lmn_cnts[n] += 1;
-            }
+        let all = _llrs.iter().map(|l| (l/2.0).tanh()).product::<f32>();
+        for &c in row {
+            let lmn = all / (llrs[llr_cnts[c] - 1][c]/2.0).tanh();
+            lmn_struct[lmn_cnts[c]][c] = 2.0 * lmn.atanh();
+            lmn_cnts[c] += 1;
         }
     }
 
     println!("lmn_struct:");
-    for i in 0..3 {
+    for i in 0..lmn_struct.len() {
         println!("{:.5?}", lmn_struct[i]);
     }
     println!();
 
     // variable check probs (repeat codes)
-    let mut output: [f64; 10] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-    for n in 0..10 {
-        let all = (0..3).map(|i| lmn_struct[i][n]).sum::<f64>();
+    let mut output = vec![0.0; parity.ncols];
+    for n in 0..parity.ncols {
+        let all = (0..lmn_struct.len()).map(|i| lmn_struct[i][n]).sum::<f32>();
         let mut cnt = 0;
-        for m in 0..5 {
-            if H[m][n] == 1 {
+        for row in &parity.rows {
+            if row.contains(&n) {
                 llrs[cnt][n] = all - lmn_struct[cnt][n] + channel_llrs[n];
                 output[n] = all + channel_llrs[n];
                 cnt += 1;
             }
         }
     }
-    
-    let hard_output: [u8; 10] = output.iter().map(|&o| {
+
+    let hard_output = output.iter().map(|&o| {
         if o > 0.0 {
             0
         } else {
             1
         }
-    }).collect::<Vec<_>>().try_into().unwrap();
+    }).collect::<Vec<u8>>();
     println!("lnm:");
-    for i in 0..3 {
+    for i in 0..parity.max_column_weight {
         println!("{:.5?}", llrs[i]);
     }
     println!();
@@ -79,43 +73,49 @@ fn iteration(llrs: &mut [[f64; 10]; 3], channel_llrs: &[f64]) {
     println!();
     println!("hard output: {:?}", hard_output);
     println!();
-    println!("parity check: {:?}", &parity_check(hard_output));
+    println!("parity check: {:?}", &parity_check(&hard_output, parity));
     println!("==================================================================================");
     println!();
+
 }
 
-fn parity_check(codeword: [u8; 10]) -> [u8; 5] {
-    let mut output: [u8; 5] = [0, 0, 0, 0, 0];
-    for m in 0..5 {
-        for n in 0..10 {
-            if H[m][n] == 1 {
-                output[m] ^= codeword[n];
-            }
-        }
-    }
-    output
-}
-
-
-fn main() {
-    println!("H:");
-    for row in H {
-        println!("{:?}", row);
-    }
-    println!();
+pub fn test_sparse_decoder() {
+    let h = SparseParity {
+        nrows: 5,
+        ncols: 10,
+        max_column_weight: 3,
+        rows: vec![
+            vec![0, 1, 2, 5, 6, 9],
+            vec![0, 2, 4, 5, 7, 8],
+            vec![2, 3, 4, 6, 8, 9],
+            vec![1, 3, 4, 5, 7, 9],
+            vec![0, 1, 3, 6, 7, 8],
+        ]
+    };
 
     // Problem setup
-    let channel_probs: [f64; 10] = [-0.63, -0.83, -0.73, -0.04, 0.1, 0.95, -0.76, 0.66, -0.55, 0.58];
-    let channel_llrs: [f64; 10] = channel_probs.iter().map(|y| -2.0 * y).collect::<Vec<_>>().try_into().unwrap();
-    //let channel_llrs: [f64; 10] = [1.3, 1.7, 1.5, 0.08, -0.2, -1.9, 1.5, -1.3, 1.1, -1.2];
+    let channel_probs = vec![-0.63, -0.83, -0.73, -0.04, 0.1, 0.95, -0.76, 0.66, -0.55, 0.58];
+    let channel_llrs = channel_probs.iter().map(|y| -2.0 * y).collect::<Vec<f32>>();
 
     let niters = 3;
-    let mut llrs = [
+    let mut llrs = vec![
         channel_llrs.clone(),
         channel_llrs.clone(),
         channel_llrs.clone()
     ];
     for _ in 0..niters {
-        iteration(&mut llrs, &channel_llrs);
+        iteration(&mut llrs, &channel_llrs, &h);
     }
+}
+
+fn main() {
+    println!("H:");
+    println!("[1, 1, 1, 0, 0, 1, 1, 0, 0, 1],");
+    println!("[1, 0, 1, 0, 1, 1, 0, 1, 1, 0],");
+    println!("[0, 0, 1, 1, 1, 0, 1, 0, 1, 1],");
+    println!("[0, 1, 0, 1, 1, 1, 0, 1, 0, 1],");
+    println!("[1, 1, 0, 1, 0, 0, 1, 1, 1, 0],");
+    println!();
+
+    test_sparse_decoder();
 }
